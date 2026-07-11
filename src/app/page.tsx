@@ -193,7 +193,9 @@ export default function Home() {
   const [bankErr, setBankErr] = useState<string | null>(null);
   const [sensexErr, setSensexErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [interval, setIntervalPts] = useState(300);
+  const [niftyPts, setNiftyPts] = useState(100);
+  const [bankNiftyPts, setBankNiftyPts] = useState(300);
+  const [sensexPts, setSensexPts] = useState(300);
   const [notifications, setNotifications] = useState<NotificationEntry[]>([]);
   const [permGranted, setPermGranted] = useState(false);
   const notifiedRef = useRef<Set<string>>(new Set());
@@ -212,31 +214,44 @@ export default function Home() {
     }
   }, []);
 
+  const getInterval = useCallback(
+    (symbol: string) => {
+      if (symbol === "^NSEI") return niftyPts;
+      if (symbol === "^NSEBANK") return bankNiftyPts;
+      return sensexPts;
+    },
+    [niftyPts, bankNiftyPts, sensexPts]
+  );
+
   const checkMilestones = useCallback(
     (data: MarketData) => {
-      if (interval <= 0) return;
+      const pts = getInterval(data.symbol);
+      if (pts <= 0) return;
       const diff = data.price - data.open;
-      // how many full intervals from open
-      const level = Math.floor(Math.abs(diff) / interval);
+      const level = Math.floor(Math.abs(diff) / pts);
       if (level === 0) return;
 
       const direction = diff > 0 ? 1 : -1;
-      // check all levels from 1..level
       for (let i = 1; i <= level; i++) {
-        const milestone = data.open + direction * i * interval;
+        const milestone = data.open + direction * i * pts;
         const key = `${data.symbol}:${milestone}`;
         if (notifiedRef.current.has(key)) continue;
         notifiedRef.current.add(key);
 
         const type = direction > 0 ? "up" : "down";
         const arrow = type === "up" ? "▲" : "▼";
-        const msg = `${data.name} crossed ${formatNum(milestone)} ${arrow} (${type === "up" ? "+" : "-"}${i * interval} from open)`;
+        const msg = `${data.name} crossed ${formatNum(milestone)} ${arrow} (${type === "up" ? "+" : "-"}${i * pts} from open)`;
 
-        // Browser notification
         if (permGranted) {
           new Notification(`${data.name} Alert`, { body: msg, icon: "/favicon.ico" });
         }
         playBeep();
+
+        fetch("/api/send-telegram", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message: msg }),
+        }).catch(() => {});
 
         setNotifications((prev) => [
           { id: ++idRef.current, time: new Date(), message: msg, type },
@@ -244,7 +259,7 @@ export default function Home() {
         ]);
       }
     },
-    [interval, permGranted]
+    [getInterval, permGranted]
   );
 
   const fetchAll = useCallback(async () => {
@@ -321,23 +336,29 @@ export default function Home() {
       </header>
 
       <main className="mx-auto max-w-4xl px-4 py-8">
-        {/* Interval setting */}
-        <div className="mb-6 flex items-center gap-3">
-          <label className="text-sm text-zinc-400">
-            Alert every
-          </label>
-          <input
-            type="number"
-            min={10}
-            step={10}
-            value={interval}
-            onChange={(e) => {
-              const v = parseInt(e.target.value, 10);
-              if (!isNaN(v) && v > 0) setIntervalPts(v);
-            }}
-            className="w-24 rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-sm font-mono text-zinc-100 focus:outline-none focus:border-zinc-500"
-          />
-          <span className="text-sm text-zinc-400">points from open</span>
+        {/* Interval settings */}
+        <div className="mb-6 grid gap-3 sm:grid-cols-3">
+          {[
+            { label: "Nifty 50", value: niftyPts, setter: setNiftyPts },
+            { label: "Bank Nifty", value: bankNiftyPts, setter: setBankNiftyPts },
+            { label: "Sensex", value: sensexPts, setter: setSensexPts },
+          ].map(({ label, value, setter }) => (
+            <div key={label} className="flex items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-900/40 px-4 py-2.5">
+              <span className="text-sm text-zinc-400 whitespace-nowrap">{label}</span>
+              <input
+                type="number"
+                min={10}
+                step={10}
+                value={value}
+                onChange={(e) => {
+                  const v = parseInt(e.target.value, 10);
+                  if (!isNaN(v) && v > 0) setter(v);
+                }}
+                className="w-20 rounded-lg border border-zinc-700 bg-zinc-900 px-2 py-1 text-sm font-mono text-zinc-100 focus:outline-none focus:border-zinc-500"
+              />
+              <span className="text-xs text-zinc-500">pts</span>
+            </div>
+          ))}
         </div>
 
         {/* Market cards */}
@@ -364,8 +385,7 @@ export default function Home() {
           </h3>
           {notifications.length === 0 ? (
             <p className="text-sm text-zinc-600">
-              No alerts yet. You will be notified when price moves by{" "}
-              {interval} points from today&apos;s open.
+              No alerts yet. You will be notified when price crosses set point milestones.
             </p>
           ) : (
             <ul className="space-y-2 max-h-80 overflow-y-auto">
