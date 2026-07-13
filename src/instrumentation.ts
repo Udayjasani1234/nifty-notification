@@ -131,10 +131,14 @@ async function checkAlerts() {
   }
 }
 
+// OI monitoring runs separately via: python scripts/oi-monitor.py (uses Upstox API)
+
 export function register() {
-  // Start the background alert checker every 30 seconds
   setInterval(checkAlerts, CHECK_INTERVAL_MS);
   console.log(
-    "🔔 Nifty Telegram alert checker started (every 30s, market hours only)"
+    "🔔 Nifty price alert checker started (every 30s, market hours only)"
+  );
+  console.log(
+    "📊 For OI alerts, run separately: python scripts/oi-monitor.py"
   );
 }
