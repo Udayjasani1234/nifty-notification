@@ -162,13 +162,29 @@ export default function Home() {
   const [bankErr, setBankErr] = useState<string | null>(null);
   const [sensexErr, setSensexErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [oiThreshold, setOiThreshold] = useState(500);
+  const [oiThresholds, setOiThresholds] = useState<Record<string, number>>({});
   const [oiChain, setOiChain] = useState<OiChainData[]>([]);
   const [activeSymbol, setActiveSymbol] = useState("NIFTY");
   const [oiAlerts, setOiAlerts] = useState<OiAlert[]>([]);
   const [permGranted, setPermGranted] = useState(false);
   const oiNotifiedRef = useRef<Set<string>>(new Set());
   const idRef = useRef(0);
+
+  // ── Load thresholds from data.json via API ──
+  useEffect(() => {
+    fetch("/api/config")
+      .then((r) => r.json())
+      .then((json) => {
+        const user = json.users?.[0];
+        if (user?.oi_threshold) {
+          const t = user.oi_threshold;
+          if (typeof t === "object") {
+            setOiThresholds(t);
+          }
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   // ── Load persisted notifications from localStorage ──
   useEffect(() => {
@@ -247,7 +263,7 @@ export default function Home() {
       setOiChain(json.data ?? []);
 
       // Only send alerts during market hours
-      if (!isMarketOpen()) return;
+      // if (!isMarketOpen()) return; // TODO: uncomment after testing
 
       for (const sym of json.data ?? []) {
         for (const row of sym.strikes ?? []) {
@@ -255,9 +271,10 @@ export default function Home() {
             const opt = row[optType];
             if (!opt || opt.prevOi === 0) continue;
             const pct: number = opt.oiPct;
-            if (Math.abs(pct) < oiThreshold) continue;
+            const symThreshold = oiThresholds[sym.symbol] ?? Infinity;
+            if (Math.abs(pct) < symThreshold) continue;
 
-            const key = `${sym.symbol}:${row.strike}:${optType.toUpperCase()}:${Math.floor(Math.abs(pct) / oiThreshold)}`;
+            const key = `${sym.symbol}:${row.strike}:${optType.toUpperCase()}:${Math.floor(Math.abs(pct) / symThreshold)}`;
             if (oiNotifiedRef.current.has(key)) continue;
             oiNotifiedRef.current.add(key);
 
@@ -301,7 +318,7 @@ export default function Home() {
         }
       }
     } catch { /* ignore */ }
-  }, [oiThreshold, permGranted, saveToStorage]);
+  }, [oiThresholds, permGranted, saveToStorage]);
 
   useEffect(() => {
     checkOi(); // always fetch once on load to show latest data
@@ -332,23 +349,28 @@ export default function Home() {
 
       <main className="mx-auto max-w-6xl px-4 py-8">
         {/* OI threshold setting */}
-        <div className="mb-6 flex items-center gap-3 rounded-xl border border-zinc-800 bg-zinc-900/40 px-4 py-3 w-fit">
-          <span className="text-sm text-zinc-400">OI Alert when change exceeds</span>
-          <input
-            type="number"
-            min={10}
-            step={10}
-            value={oiThreshold}
-            onChange={(e) => {
-              const v = parseInt(e.target.value, 10);
-              if (!isNaN(v) && v > 0) {
-                setOiThreshold(v);
-                oiNotifiedRef.current.clear();
-              }
-            }}
-            className="w-20 rounded-lg border border-zinc-700 bg-zinc-900 px-2 py-1 text-sm font-mono text-zinc-100 focus:outline-none focus:border-zinc-500"
-          />
-          <span className="text-sm text-zinc-400">%</span>
+        <div className="mb-6 flex flex-wrap items-center gap-4 rounded-xl border border-zinc-800 bg-zinc-900/40 px-4 py-3 w-fit">
+          <span className="text-sm text-zinc-400">OI Alert thresholds:</span>
+          {["NIFTY", "BANKNIFTY", "SENSEX"].map((sym) => (
+            <div key={sym} className="flex items-center gap-1.5">
+              <span className="text-xs text-zinc-500">{sym}</span>
+              <input
+                type="number"
+                min={10}
+                step={10}
+                value={oiThresholds[sym] ?? ""}
+                onChange={(e) => {
+                  const v = parseInt(e.target.value, 10);
+                  if (!isNaN(v) && v > 0) {
+                    setOiThresholds((prev) => ({ ...prev, [sym]: v }));
+                    oiNotifiedRef.current.clear();
+                  }
+                }}
+                className="w-16 rounded-lg border border-zinc-700 bg-zinc-900 px-2 py-1 text-sm font-mono text-zinc-100 focus:outline-none focus:border-zinc-500"
+              />
+              <span className="text-xs text-zinc-500">%</span>
+            </div>
+          ))}
         </div>
 
         {/* Market cards */}
@@ -420,8 +442,9 @@ export default function Home() {
                       {chain.strikes.map((row) => {
                         const ceUp = row.ce.oiPct >= 0;
                         const peUp = row.pe.oiPct >= 0;
-                        const ceAlert = Math.abs(row.ce.oiPct) >= oiThreshold;
-                        const peAlert = Math.abs(row.pe.oiPct) >= oiThreshold;
+                        const symTh = oiThresholds[chain.symbol] ?? Infinity;
+                        const ceAlert = Math.abs(row.ce.oiPct) >= symTh;
+                        const peAlert = Math.abs(row.pe.oiPct) >= symTh;
                         return (
                           <tr key={row.strike} className="hover:bg-zinc-800/30 transition-colors group">
                             {/* CE side */}
@@ -457,7 +480,7 @@ export default function Home() {
           {oiAlerts.length === 0 ? (
             <p className="text-sm text-zinc-600">
               {marketOpen
-                ? `Watching all strikes for OI% change ≥ ${oiThreshold}%...`
+                ? `Watching all strikes for OI% change ≥ thresholds (NIFTY: ${oiThresholds.NIFTY}%, BANKNIFTY: ${oiThresholds.BANKNIFTY}%, SENSEX: ${oiThresholds.SENSEX}%)...`
                 : "Market is closed. OI alerts will appear here during market hours (9:15 AM – 3:30 PM IST)."}
             </p>
           ) : (

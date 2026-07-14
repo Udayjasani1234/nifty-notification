@@ -11,14 +11,22 @@ os.environ["PYTHONIOENCODING"] = "utf-8"
 
 import requests
 import time
+import json
+from pathlib import Path
 from datetime import datetime
 import pytz
 
-# ── Configuration ──────────────────────────────────────────────────────
-TELEGRAM_BOT_TOKEN = "8882164490:AAEmber4ZZocHVe-nXmX-oHaKza3slZYd9s"
-TELEGRAM_CHAT_ID = "8503524860"
-UPSTOX_ACCESS_TOKEN = "eyJ0eXAiOiJKV1QiLCJrZXlfaWQiOiJza192MS4wIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiIzQkI2RlQiLCJqdGkiOiI2YTU0ZDNkNWJhMDhhZDYwZmRlMjRhMzkiLCJpc011bHRpQ2xpZW50IjpmYWxzZSwiaXNQbHVzUGxhbiI6ZmFsc2UsImlzRXh0ZW5kZWQiOnRydWUsImlhdCI6MTc4Mzk0NDE0OSwiaXNzIjoidWRhcGktZ2F0ZXdheS1zZXJ2aWNlIiwiZXhwIjoxODE1NTE2MDAwfQ.gfzUTnsYE4PJ2-gdtatMAa0tMxtwO7iSNDVI7E-5vpk"
-OI_THRESHOLD = 500  # Alert when OI% change >= this value
+# ── Load config from data.json ─────────────────────────────────────────
+CONFIG_PATH = Path(__file__).parent.parent / "src" / "json" / "data.json"
+
+def load_config():
+    with open(CONFIG_PATH, "r") as f:
+        return json.load(f)
+
+config = load_config()
+TELEGRAM_BOT_TOKEN = config["telegram_bot_token"]
+UPSTOX_ACCESS_TOKEN = config["upstox_access_token"]
+USERS = [u for u in config["users"] if u.get("active", True)]
 
 SYMBOLS = [
     {"name": "NIFTY",     "key": "NSE_INDEX|Nifty 50"},
@@ -90,11 +98,11 @@ def get_spot_price(instrument_key):
 
 
 # ── Telegram ───────────────────────────────────────────────────────────
-def send_telegram(message):
+def send_telegram(message, chat_id):
     try:
         requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-            json={"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"},
+            json={"chat_id": chat_id, "text": message, "parse_mode": "HTML"},
             timeout=10,
         )
     except Exception as e:
@@ -159,22 +167,26 @@ def check_oi_alerts():
                 oi_change = oi - prev_oi
                 oi_pct = (oi_change / prev_oi) * 100
 
-                alert_key = f"{name}:{strike}:{opt_type}:{int(abs(oi_pct) // OI_THRESHOLD)}"
-                if abs(oi_pct) >= OI_THRESHOLD and alert_key not in notified:
-                    notified.add(alert_key)
-                    direction = chr(0x1F4C8) if oi_pct > 0 else chr(0x1F4C9)
-                    msg = (
-                        f"{direction} <b>{name} {int(strike)} {opt_type}</b>\n"
-                        f"OI% Change: <b>{oi_pct:.2f}%</b>\n"
-                        f"OI: {int(oi):,} | Change: {int(oi_change):,}\n"
-                        f"Prev OI: {int(prev_oi):,}\n"
-                        f"LTP: {ltp}\n"
-                        f"Spot: {spot:,.2f}\n"
-                        f"Expiry: {expiry}"
-                    )
-                    send_telegram(msg)
-                    print(f"  [ALERT] {name} {int(strike)} {opt_type} | OI%: {oi_pct:.2f}%")
-                    alerts_sent += 1
+                for user in USERS:
+                    thresholds = user["oi_threshold"]
+                    threshold = thresholds.get(name, 500) if isinstance(thresholds, dict) else thresholds
+                    chat_id = user["telegram_chat_id"]
+                    alert_key = f"{user['name']}:{name}:{strike}:{opt_type}:{int(abs(oi_pct) // threshold)}"
+                    if abs(oi_pct) >= threshold and alert_key not in notified:
+                        notified.add(alert_key)
+                        direction = chr(0x1F4C8) if oi_pct > 0 else chr(0x1F4C9)
+                        msg = (
+                            f"{direction} <b>{name} {int(strike)} {opt_type}</b>\n"
+                            f"OI% Change: <b>{oi_pct:.2f}%</b>\n"
+                            f"OI: {int(oi):,} | Change: {int(oi_change):,}\n"
+                            f"Prev OI: {int(prev_oi):,}\n"
+                            f"LTP: {ltp}\n"
+                            f"Spot: {spot:,.2f}\n"
+                            f"Expiry: {expiry}"
+                        )
+                        send_telegram(msg, chat_id)
+                        print(f"  [ALERT -> {user['name']}] {name} {int(strike)} {opt_type} | OI%: {oi_pct:.2f}%")
+                        alerts_sent += 1
 
         now_str = datetime.now(IST).strftime("%H:%M:%S")
         print(f"[{now_str}] {name}: {len(chain)} strikes checked, {alerts_sent} alerts sent (expiry: {expiry})")
@@ -186,7 +198,14 @@ def main():
     print("  OI Monitor — Upstox + Telegram")
     print("=" * 55)
     print(f"  Symbols  : {', '.join(s['name'] for s in SYMBOLS)}")
-    print(f"  Threshold: {OI_THRESHOLD}% OI change")
+    print(f"  Users    : {len(USERS)}")
+    for u in USERS:
+        t = u['oi_threshold']
+        if isinstance(t, dict):
+            parts = ', '.join(f"{k}: {v}%" for k, v in t.items())
+            print(f"    - {u['name']} ({parts})")
+        else:
+            print(f"    - {u['name']} (threshold: {t}%)")
     print(f"  Interval : 60 seconds")
     print(f"  Hours    : 9:15 AM - 3:30 PM IST (Mon-Fri)")
     print("=" * 55)
@@ -200,13 +219,20 @@ def main():
         print(f"[!] Connection failed: {r.text[:200]}")
         return
 
-    send_telegram(
-        f"OI Monitor started!\n"
-        f"Watching: NIFTY, BANKNIFTY, SENSEX\n"
-        f"Alert threshold: {OI_THRESHOLD}% OI change\n"
-        f"Checking every 60 seconds during market hours."
-    )
-    print("Telegram test sent!\n")
+    for u in USERS:
+        t = u['oi_threshold']
+        if isinstance(t, dict):
+            thresh_str = ', '.join(f"{k}: {v}%" for k, v in t.items())
+        else:
+            thresh_str = f"{t}%"
+        send_telegram(
+            f"OI Monitor started!\n"
+            f"Watching: NIFTY, BANKNIFTY, SENSEX\n"
+            f"Your thresholds: {thresh_str}\n"
+            f"Checking every 60 seconds during market hours.",
+            u["telegram_chat_id"]
+        )
+    print("Telegram startup messages sent!\n")
 
     while True:
         try:

@@ -1,4 +1,9 @@
-const UPSTOX_TOKEN = "eyJ0eXAiOiJKV1QiLCJrZXlfaWQiOiJza192MS4wIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiIzQkI2RlQiLCJqdGkiOiI2YTU0ZDNkNWJhMDhhZDYwZmRlMjRhMzkiLCJpc011bHRpQ2xpZW50IjpmYWxzZSwiaXNQbHVzUGxhbiI6ZmFsc2UsImlzRXh0ZW5kZWQiOnRydWUsImlhdCI6MTc4Mzk0NDE0OSwiaXNzIjoidWRhcGktZ2F0ZXdheS1zZXJ2aWNlIiwiZXhwIjoxODE1NTE2MDAwfQ.gfzUTnsYE4PJ2-gdtatMAa0tMxtwO7iSNDVI7E-5vpk";
+import { readFileSync } from "fs";
+import { join } from "path";
+
+const configPath = join(process.cwd(), "src", "json", "data.json");
+const config = JSON.parse(readFileSync(configPath, "utf-8"));
+const UPSTOX_TOKEN = config.upstox_access_token;
 const BASE = "https://api.upstox.com/v2";
 
 const SYMBOLS = [

@@ -1,0 +1,19 @@
+{
+  "upstox_access_token": "eyJ0eXAiOiJKV1QiLCJrZXlfaWQiOiJza192MS4wIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiIzQkI2RlQiLCJqdGkiOiI2YTU0ZDNkNWJhMDhhZDYwZmRlMjRhMzkiLCJpc011bHRpQ2xpZW50IjpmYWxzZSwiaXNQbHVzUGxhbiI6ZmFsc2UsImlzRXh0ZW5kZWQiOnRydWUsImlhdCI6MTc4Mzk0NDE0OSwiaXNzIjoidWRhcGktZ2F0ZXdheS1zZXJ2aWNlIiwiZXhwIjoxODE1NTE2MDAwfQ.gfzUTnsYE4PJ2-gdtatMAa0tMxtwO7iSNDVI7E-5vpk",
+  "telegram_bot_token": "8882164490:AAEmber4ZZocHVe-nXmX-oHaKza3slZYd9s",
+  "users": [
+    {
+      "name": "Uday Jasani",
+      "telegram_chat_id": "8503524860",
+      "oi_threshold": {
+        "NIFTY": 100,
+        "BANKNIFTY": 150,
+        "SENSEX": 400
+      },
+      "active": true
+    }
+  ]
+}
+
+
+
