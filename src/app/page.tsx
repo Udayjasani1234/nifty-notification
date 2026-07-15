@@ -38,6 +38,11 @@ interface OiAlert {
   ltp: number;
 }
 
+interface AlertUserConfig {
+  name: string;
+  oi_threshold: Record<string, number> | number;
+}
+
 // ── Helpers ────────────────────────────────────────────────────────────
 function isMarketOpen(): boolean {
   const now = new Date();
@@ -63,6 +68,19 @@ function formatOi(n: number): string {
   if (Math.abs(n) >= 1_00_000) return `${(n / 1_00_000).toFixed(2)}L`;
   if (Math.abs(n) >= 1000) return `${(n / 1000).toFixed(1)}K`;
   return String(n);
+}
+
+function thresholdForUser(user: AlertUserConfig, symbol: string): number | null {
+  if (typeof user.oi_threshold === "number") return user.oi_threshold;
+  return user.oi_threshold?.[symbol] ?? null;
+}
+
+function lowestThreshold(users: AlertUserConfig[], symbol: string): number {
+  const thresholds = users
+    .map((user) => thresholdForUser(user, symbol))
+    .filter((threshold): threshold is number => typeof threshold === "number" && Number.isFinite(threshold) && threshold > 0);
+
+  return thresholds.length > 0 ? Math.min(...thresholds) : Infinity;
 }
 
 async function fetchMarketData(symbol: string, name: string): Promise<MarketData> {
@@ -163,6 +181,7 @@ export default function Home() {
   const [sensexErr, setSensexErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [oiThresholds, setOiThresholds] = useState<Record<string, number>>({});
+  const [alertUsers, setAlertUsers] = useState<AlertUserConfig[]>([]);
   const [oiChain, setOiChain] = useState<OiChainData[]>([]);
   const [activeSymbol, setActiveSymbol] = useState("NIFTY");
   const [oiAlerts, setOiAlerts] = useState<OiAlert[]>([]);
@@ -175,7 +194,9 @@ export default function Home() {
     fetch("/api/config")
       .then((r) => r.json())
       .then((json) => {
-        const user = json.users?.[0];
+        const users = Array.isArray(json.users) ? json.users : [];
+        setAlertUsers(users);
+        const user = users[0];
         if (user?.oi_threshold) {
           const t = user.oi_threshold;
           if (typeof t === "object") {
@@ -271,10 +292,28 @@ export default function Home() {
             const opt = row[optType];
             if (!opt || opt.prevOi === 0) continue;
             const pct: number = opt.oiPct;
-            const symThreshold = oiThresholds[sym.symbol] ?? Infinity;
+            const symThreshold = lowestThreshold(alertUsers, sym.symbol);
             if (Math.abs(pct) < symThreshold) continue;
 
-            const key = `${sym.symbol}:${row.strike}:${optType.toUpperCase()}:${Math.floor(Math.abs(pct) / symThreshold)}`;
+            const alertType = optType.toUpperCase() as "CE" | "PE";
+            const key = `${sym.symbol}:${row.strike}:${alertType}:${Math.floor(Math.abs(pct) / symThreshold)}`;
+            const dir = pct > 0 ? "UP" : "DOWN";
+            const message = `${dir} <b>${sym.symbol} ${row.strike} ${alertType}</b>
+OI% Change: <b>${pct.toFixed(2)}%</b>
+OI: ${formatOi(opt.oi)} | Change: ${formatOi(opt.oiChange)}
+LTP: ${opt.ltp}`;
+
+            fetch("/api/send-telegram", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                message,
+                symbol: sym.symbol,
+                strike: row.strike,
+                type: alertType,
+                oiPct: pct,
+              }),
+            }).catch(() => {});
             if (oiNotifiedRef.current.has(key)) continue;
             oiNotifiedRef.current.add(key);
 
@@ -283,7 +322,7 @@ export default function Home() {
               time: new Date(),
               symbol: sym.symbol,
               strike: row.strike,
-              type: optType.toUpperCase() as "CE" | "PE",
+              type: alertType,
               oiPct: pct,
               oi: opt.oi,
               oiChange: opt.oiChange,
@@ -299,15 +338,6 @@ export default function Home() {
               });
             }
 
-            // Send to Telegram
-            const dir = pct > 0 ? "📈" : "📉";
-            fetch("/api/send-telegram", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                message: `${dir} <b>${sym.symbol} ${row.strike} ${alert.type}</b>\nOI% Change: <b>${pct.toFixed(2)}%</b>\nOI: ${formatOi(opt.oi)} | Change: ${formatOi(opt.oiChange)}\nLTP: ${opt.ltp}`,
-              }),
-            }).catch(() => {});
 
             setOiAlerts((prev) => {
               const updated = [alert, ...prev].slice(0, 100);
@@ -318,7 +348,7 @@ export default function Home() {
         }
       }
     } catch { /* ignore */ }
-  }, [oiThresholds, permGranted, saveToStorage]);
+  }, [alertUsers, permGranted, saveToStorage]);
 
   useEffect(() => {
     checkOi(); // always fetch once on load to show latest data
