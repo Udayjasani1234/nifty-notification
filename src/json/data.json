@@ -6,9 +6,9 @@
       "name": "Uday Jasani",
       "telegram_chat_id": "8503524860",
       "oi_threshold": {
-        "NIFTY": 100,
-        "BANKNIFTY": 150,
-        "SENSEX": 400
+        "NIFTY": 400,
+        "BANKNIFTY": 600,
+        "SENSEX": 800
       },
       "active": true
     }
