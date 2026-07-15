@@ -38,11 +38,6 @@ interface OiAlert {
   ltp: number;
 }
 
-interface AlertUserConfig {
-  name: string;
-  oi_threshold: Record<string, number> | number;
-}
-
 // ── Helpers ────────────────────────────────────────────────────────────
 function isMarketOpen(): boolean {
   const now = new Date();
@@ -70,26 +65,17 @@ function formatOi(n: number): string {
   return String(n);
 }
 
-function thresholdForUser(user: AlertUserConfig, symbol: string): number | null {
-  if (typeof user.oi_threshold === "number") return user.oi_threshold;
-  return user.oi_threshold?.[symbol] ?? null;
-}
 
-function lowestThreshold(users: AlertUserConfig[], symbol: string): number {
-  const thresholds = users
-    .map((user) => thresholdForUser(user, symbol))
-    .filter((threshold): threshold is number => typeof threshold === "number" && Number.isFinite(threshold) && threshold > 0);
-
-  return thresholds.length > 0 ? Math.min(...thresholds) : Infinity;
-}
 
 async function fetchMarketData(symbol: string, name: string): Promise<MarketData> {
   const res = await fetch(`/api/market-data?symbol=${encodeURIComponent(symbol)}`);
   if (!res.ok) throw new Error(`API error ${res.status}`);
   const json = await res.json();
+  if (!json.chart?.result?.[0]) throw new Error(`No data for ${name}`);
   const meta = json.chart.result[0].meta;
-  const quotes = json.chart.result[0].indicators.quote[0];
-  const closes = quotes.close as (number | null)[];
+  const quotes = json.chart.result[0].indicators?.quote?.[0];
+  if (!quotes) throw new Error(`No quote data for ${name}`);
+  const closes = (quotes.close ?? []) as (number | null)[];
   let price = meta.regularMarketPrice;
   for (let i = closes.length - 1; i >= 0; i--) {
     if (closes[i] != null) { price = closes[i] as number; break; }
@@ -181,7 +167,7 @@ export default function Home() {
   const [sensexErr, setSensexErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [oiThresholds, setOiThresholds] = useState<Record<string, number>>({});
-  const [alertUsers, setAlertUsers] = useState<AlertUserConfig[]>([]);
+
   const [oiChain, setOiChain] = useState<OiChainData[]>([]);
   const [activeSymbol, setActiveSymbol] = useState("NIFTY");
   const [oiAlerts, setOiAlerts] = useState<OiAlert[]>([]);
@@ -195,7 +181,6 @@ export default function Home() {
       .then((r) => r.json())
       .then((json) => {
         const users = Array.isArray(json.users) ? json.users : [];
-        setAlertUsers(users);
         const user = users[0];
         if (user?.oi_threshold) {
           const t = user.oi_threshold;
@@ -273,88 +258,71 @@ export default function Home() {
     return () => clearInterval(id);
   }, [fetchAll]);
 
-  // ── OI fetch & alert ──
-  const checkOi = useCallback(async () => {
-    try {
-      const res = await fetch("/api/upstox-oi");
-      if (!res.ok) return;
-      const json = await res.json();
+  // ── OI stream via SSE (real-time, no polling) ──
+  const processOiData = useCallback((data: OiChainData[]) => {
+    setOiChain(data);
 
-      // Always update option chain table
-      setOiChain(json.data ?? []);
+    // UI alerts (Telegram handled by server-side WebSocket manager)
+    for (const sym of data) {
+      for (const row of sym.strikes ?? []) {
+        for (const optType of ["ce", "pe"] as const) {
+          const opt = row[optType];
+          if (!opt || opt.prevOi === 0) continue;
+          const pct: number = opt.oiPct;
+          const symThreshold = oiThresholds[sym.symbol] ?? Infinity;
+          if (Math.abs(pct) < symThreshold) continue;
 
-      // Only send alerts during market hours
-      if (!isMarketOpen()) return;
+          const alertType = optType.toUpperCase() as "CE" | "PE";
+          const uiKey = `${sym.symbol}:${row.strike}:${alertType}:${Math.round(pct)}`;
+          if (oiNotifiedRef.current.has(uiKey)) continue;
+          oiNotifiedRef.current.add(uiKey);
 
-      for (const sym of json.data ?? []) {
-        for (const row of sym.strikes ?? []) {
-          for (const optType of ["ce", "pe"] as const) {
-            const opt = row[optType];
-            if (!opt || opt.prevOi === 0) continue;
-            const pct: number = opt.oiPct;
-            const symThreshold = lowestThreshold(alertUsers, sym.symbol);
-            if (Math.abs(pct) < symThreshold) continue;
+          const alert: OiAlert = {
+            id: ++idRef.current,
+            time: new Date(),
+            symbol: sym.symbol,
+            strike: row.strike,
+            type: alertType,
+            oiPct: pct,
+            oi: opt.oi,
+            oiChange: opt.oiChange,
+            ltp: opt.ltp,
+          };
 
-            const alertType = optType.toUpperCase() as "CE" | "PE";
-            const dir = pct > 0 ? "UP" : "DOWN";
-            const message = `${dir} <b>${sym.symbol} ${row.strike} ${alertType}</b>\nOI% Change: <b>${pct.toFixed(2)}%</b>\nOI: ${formatOi(opt.oi)} | Change: ${formatOi(opt.oiChange)}\nLTP: ${opt.ltp}`;
-
-            // Send to server — server handles per-user threshold, 33% gap, and dedup
-            fetch("/api/send-telegram", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                message,
-                symbol: sym.symbol,
-                strike: row.strike,
-                type: alertType,
-                oiPct: pct,
-              }),
-            }).catch(() => {});
-
-            // UI alert (client-side dedup for website display only)
-            const uiKey = `${sym.symbol}:${row.strike}:${alertType}:${Math.round(pct)}`;
-            if (oiNotifiedRef.current.has(uiKey)) continue;
-            oiNotifiedRef.current.add(uiKey);
-
-            const alert: OiAlert = {
-              id: ++idRef.current,
-              time: new Date(),
-              symbol: sym.symbol,
-              strike: row.strike,
-              type: alertType,
-              oiPct: pct,
-              oi: opt.oi,
-              oiChange: opt.oiChange,
-              ltp: opt.ltp,
-            };
-
-            playBeep();
-            if (permGranted) {
-              new Notification(`OI Alert: ${sym.symbol} ${row.strike} ${alert.type}`, {
-                body: `OI% ${pct > 0 ? "▲" : "▼"} ${Math.abs(pct).toFixed(2)}% | LTP: ${opt.ltp}`,
-                icon: "/favicon.ico",
-              });
-            }
-
-            setOiAlerts((prev) => {
-              const updated = [alert, ...prev].slice(0, 100);
-              saveToStorage(oiNotifiedRef.current, updated);
-              return updated;
+          playBeep();
+          if (permGranted) {
+            new Notification(`OI Alert: ${sym.symbol} ${row.strike} ${alert.type}`, {
+              body: `OI% ${pct > 0 ? "\u25B2" : "\u25BC"} ${Math.abs(pct).toFixed(2)}% | LTP: ${opt.ltp}`,
+              icon: "/favicon.ico",
             });
           }
+
+          setOiAlerts((prev) => {
+            const updated = [alert, ...prev].slice(0, 100);
+            saveToStorage(oiNotifiedRef.current, updated);
+            return updated;
+          });
         }
       }
-    } catch { /* ignore */ }
-  }, [alertUsers, permGranted, saveToStorage]);
+    }
+  }, [oiThresholds, permGranted, saveToStorage]);
 
   useEffect(() => {
-    checkOi(); // always fetch once on load to show latest data
-    const id = setInterval(() => {
-      if (isMarketOpen()) checkOi(); // repeat only during market hours
-    }, 60000);
-    return () => clearInterval(id);
-  }, [checkOi]);
+    const es = new EventSource("/api/oi-stream");
+
+    es.onmessage = (event) => {
+      try {
+        const json = JSON.parse(event.data);
+        if (json.data) processOiData(json.data);
+      } catch { /* ignore */ }
+    };
+
+    es.onerror = () => {
+      // EventSource auto-reconnects
+    };
+
+    return () => es.close();
+  }, [processOiData]);
 
   const marketOpen = isMarketOpen();
 
