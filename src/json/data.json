@@ -10,6 +10,7 @@
         "BANKNIFTY": 600,
         "SENSEX": 800
       },
+      "oi_min_gap": 33,
       "active": true
     }
   ]

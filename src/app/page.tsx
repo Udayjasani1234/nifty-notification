@@ -284,7 +284,7 @@ export default function Home() {
       setOiChain(json.data ?? []);
 
       // Only send alerts during market hours
-      // if (!isMarketOpen()) return; // TODO: uncomment after testing
+      if (!isMarketOpen()) return;
 
       for (const sym of json.data ?? []) {
         for (const row of sym.strikes ?? []) {
@@ -296,13 +296,10 @@ export default function Home() {
             if (Math.abs(pct) < symThreshold) continue;
 
             const alertType = optType.toUpperCase() as "CE" | "PE";
-            const key = `${sym.symbol}:${row.strike}:${alertType}:${Math.floor(Math.abs(pct) / symThreshold)}`;
             const dir = pct > 0 ? "UP" : "DOWN";
-            const message = `${dir} <b>${sym.symbol} ${row.strike} ${alertType}</b>
-OI% Change: <b>${pct.toFixed(2)}%</b>
-OI: ${formatOi(opt.oi)} | Change: ${formatOi(opt.oiChange)}
-LTP: ${opt.ltp}`;
+            const message = `${dir} <b>${sym.symbol} ${row.strike} ${alertType}</b>\nOI% Change: <b>${pct.toFixed(2)}%</b>\nOI: ${formatOi(opt.oi)} | Change: ${formatOi(opt.oiChange)}\nLTP: ${opt.ltp}`;
 
+            // Send to server — server handles per-user threshold, 33% gap, and dedup
             fetch("/api/send-telegram", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -314,8 +311,11 @@ LTP: ${opt.ltp}`;
                 oiPct: pct,
               }),
             }).catch(() => {});
-            if (oiNotifiedRef.current.has(key)) continue;
-            oiNotifiedRef.current.add(key);
+
+            // UI alert (client-side dedup for website display only)
+            const uiKey = `${sym.symbol}:${row.strike}:${alertType}:${Math.round(pct)}`;
+            if (oiNotifiedRef.current.has(uiKey)) continue;
+            oiNotifiedRef.current.add(uiKey);
 
             const alert: OiAlert = {
               id: ++idRef.current,
@@ -331,13 +331,11 @@ LTP: ${opt.ltp}`;
 
             playBeep();
             if (permGranted) {
-              const dir = pct > 0 ? "▲" : "▼";
               new Notification(`OI Alert: ${sym.symbol} ${row.strike} ${alert.type}`, {
-                body: `OI% ${dir} ${Math.abs(pct).toFixed(2)}% | LTP: ${opt.ltp}`,
+                body: `OI% ${pct > 0 ? "▲" : "▼"} ${Math.abs(pct).toFixed(2)}% | LTP: ${opt.ltp}`,
                 icon: "/favicon.ico",
               });
             }
-
 
             setOiAlerts((prev) => {
               const updated = [alert, ...prev].slice(0, 100);
